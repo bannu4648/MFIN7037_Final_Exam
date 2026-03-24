@@ -1,166 +1,160 @@
-# Clean Dataset — MAX/MAXβ Anomaly Study
+# MFIN7037 Final Exam — MAX / MAXβ Anomaly Study
 
-## Data Source
+A full quantitative research pipeline replicating and extending the MAX anomaly from **Bali, Ince & Ozsoylev (2025)** — *"MAX on Steroids: A New Measure of Investor Attraction to Lottery Stocks"*.
 
-- **Stock data**: CRSP (Center for Research in Security Prices), January 2025 vintage
-  - Daily stock file: `crsp_202501.dsf_v2.parquet`
-  - Monthly stock file: `crsp_202501.msf_v2.parquet`
-- **Factor data**: Kenneth French Data Library — Fama-French 5 Factors (daily)
+The project demonstrates that stocks with extreme positive daily returns (high MAX) subsequently underperform, and that a **beta-neutralised version (MAXβ)** — constructed via the paper's double-sort procedure — delivers a cleaner, higher Sharpe-ratio signal by isolating idiosyncratic lottery-seeking behaviour from systematic market risk.
 
-## Universe
-
-- **Stocks**: US common equities (`securitytype=EQTY`, `sharetype=NS`)
-- **Exchanges**: NYSE (N), AMEX (A), NASDAQ (Q)
-- **Filters applied**:
-  - Penny stocks removed (absolute price < $1)
-  - Stocks with >20% missing daily returns removed
-  - Stocks with fewer than 252 daily observations (1 year) removed
-  - Stocks with fewer than 12 monthly observations removed
-  - Volume and market cap gaps forward-filled up to 5 periods
-
-## Time Period
-
-2010-01-04 to 2024-12-31
-
-## Stock Count
-
-- **8,817 unique stocks** in the daily dataset
-- **8,815 unique stocks** in the monthly dataset
-- Yearly breakdown (daily): ~4,400–5,800 stocks per year
-
-## Output Files
-
-### `daily_data.parquet` (16,423,122 rows)
-
-| Column | Type | Description |
-|---|---|---|
-| `date` | datetime | Trading date |
-| `permno` | int | CRSP permanent security identifier |
-| `ticker` | str | Ticker symbol |
-| `daily_return` | float | Daily holding-period return (CRSP `dlyret`, adjusted for splits/dividends) |
-| `volume` | float | Daily trading volume (shares) |
-| `market_cap` | float | Market capitalization (thousands of USD) |
-| `price` | float | Closing price (absolute value; CRSP uses negative for bid-ask midpoint) |
-| `month` | str | Year-month identifier (YYYY-MM) |
-| `mkt_rf` | float | Market excess return (Fama-French) |
-| `smb` | float | Small-minus-big factor |
-| `hml` | float | High-minus-low factor |
-| `rmw` | float | Robust-minus-weak factor |
-| `cma` | float | Conservative-minus-aggressive factor |
-| `rf` | float | Risk-free rate |
-
-### `monthly_data.parquet` (786,467 rows)
-
-| Column | Type | Description |
-|---|---|---|
-| `date` | datetime | Last trading date of the month |
-| `permno` | int | CRSP permanent security identifier |
-| `ticker` | str | Ticker symbol |
-| `monthly_return` | float | Monthly holding-period return (CRSP `mthret`) |
-| `volume` | float | Monthly trading volume (shares) |
-| `market_cap` | float | Month-end market capitalization (thousands of USD) |
-| `month` | str | Year-month identifier (YYYY-MM) |
-
-### `ff_factors.parquet` (3,774 rows)
-
-| Column | Type | Description |
-|---|---|---|
-| `date` | datetime | Trading date |
-| `mkt_rf` | float | Market excess return |
-| `smb` | float | Small-minus-big factor |
-| `hml` | float | High-minus-low factor |
-| `rmw` | float | Robust-minus-weak factor |
-| `cma` | float | Conservative-minus-aggressive factor |
-| `rf` | float | Risk-free rate |
-
-## Usage Guide
-
-### Person 2 — Signal Computation & Strategy (Engineer 2)
-
-**Goal**: Compute MAX, MAXβ, build decile portfolios, and run the backtest.
-
-**Computing MAX** (average of 5 highest daily returns per stock-month):
-
-```python
-import pandas as pd
-
-daily = pd.read_parquet("data/clean/daily_data.parquet")
-
-def compute_max(group):
-    top5 = group.nlargest(5)
-    return top5.mean() if len(top5) >= 5 else None
-
-max_signal = (
-    daily.groupby(["permno", "month"])["daily_return"]
-    .apply(compute_max)
-    .reset_index(name="MAX")
-)
-```
-
-**Computing MAXβ** (beta-neutralized MAX via double sort):
-
-1. Estimate each stock's market beta using a 252-day rolling regression of `daily_return` on `mkt_rf + rf` (both columns are in `daily_data.parquet`).
-2. At each month-end, sort stocks into **deciles by beta**.
-3. Within each beta decile, sort stocks into **deciles by MAX**.
-4. Group all stocks with the same MAX rank across beta deciles — that forms the MAXβ portfolio.
-
-```python
-# Beta estimation (rolling 252-day window)
-from numpy.linalg import lstsq
-
-daily["mkt_total"] = daily["mkt_rf"] + daily["rf"]
-# ... rolling regression of daily_return on mkt_total per permno ...
-# Then merge beta onto monthly data and double-sort.
-```
-
-**Portfolio construction**: Use `monthly_data.parquet` for next-month returns. Join MAX/MAXβ signals (computed at month-end) to next month's `monthly_return` via `permno` + `month`. Use `market_cap` for value-weighted portfolio returns.
-
-**Key columns you need**:
-| File | Columns | Purpose |
-|---|---|---|
-| `daily_data.parquet` | `permno`, `month`, `daily_return` | Compute MAX (top-5 avg) |
-| `daily_data.parquet` | `mkt_rf`, `rf` | Estimate beta for MAXβ |
-| `monthly_data.parquet` | `permno`, `month`, `monthly_return` | Next-month portfolio returns |
-| `monthly_data.parquet` | `market_cap` | Value-weighted portfolio construction |
+**Sample**: 8,817 US equities (NYSE/AMEX/NASDAQ), 2010–2024 (177 months).
 
 ---
 
-### Person 3 — Analysis & Investment Story (Analyst)
+## Key Results
 
-**Goal**: Evaluate strategy performance, run extensions, build the investment narrative.
+| Metric | MAX | MAXβ (Double Sort) | Paper (MAXβ) |
+|---|---|---|---|
+| Mean Monthly L/S Return | 0.82% | **0.86%** | 0.81% |
+| Annualised Return | 10.35% | **10.88%** | ~9.7% |
+| Annualised Volatility | 28.1% | **21.0%** | lower than MAX |
+| **Sharpe Ratio (ann.)** | 0.37 | **0.52** | higher than MAX |
+| Win Rate | 58.8% | 58.2% | — |
+| Beta spread D10−D1 | **+0.59** | **+0.02 ≈ 0** | ≈ 0.000 |
 
-**P&L and performance metrics**: Use the long-short portfolio returns from Person 2 to compute cumulative P&L, Sharpe ratio, max drawdown, and volatility.
+The beta-spread result is the paper's central validation: the double sort successfully removes systematic risk from the lottery signal, confirming that plain MAX is partly a proxy for market beta rather than pure idiosyncratic lottery demand.
 
-**Factor regression (alpha)**: Regress long-short returns on the Fama-French 5 factors from `ff_factors.parquet` to test whether the anomaly survives standard risk adjustment.
-
-```python
-import pandas as pd
-import statsmodels.api as sm
-
-ff = pd.read_parquet("data/clean/ff_factors.parquet")
-# Merge monthly FF factors onto long-short returns
-# OLS: long_short_return ~ mkt_rf + smb + hml + rmw + cma
-# The intercept (alpha) is what you report.
-```
-
-**Extensions**:
-
-- **Performance decay**: Split `monthly_data.parquet` into pre-2020 vs post-2020 using the `month` column and compare Sharpe ratios.
-- **Liquidity filter**: Use `volume` in `daily_data.parquet` or `monthly_data.parquet` to remove the bottom quintile by volume, then re-run the strategy.
-- **Size analysis**: Use `market_cap` in `monthly_data.parquet` to split into small-cap vs large-cap and check if the anomaly concentrates in small stocks.
-
-**Key columns you need**:
-| File | Columns | Purpose |
-|---|---|---|
-| `ff_factors.parquet` | `mkt_rf`, `smb`, `hml`, `rmw`, `cma`, `rf` | Factor regressions for alpha |
-| `monthly_data.parquet` | `month`, `volume`, `market_cap` | Time splits, liquidity/size filters |
+> See [`analysis/README.md`](analysis/README.md) for a full breakdown of results, year-by-year returns, decile spreads, and a discussion of what the data proves.
 
 ---
 
-## Reproducing
+## Project Structure
+
+```
+MFIN7037_Final_Exam/
+│
+├── pipeline/                       # Part 1 — Data engineering
+│   ├── data_pipeline.py            # CRSP raw data → clean parquets
+│   └── README.md                   # Data dictionary & column descriptions
+│
+├── analysis/                       # Part 2 — Signal construction & backtest
+│   ├── strategy.py                 # Full pipeline (Steps 1–9)
+│   ├── instructions.md             # Assignment specification
+│   ├── README.md                   # Results, methodology, paper comparison
+│   │
+│   ├── strategy_returns.csv        # Monthly MAX long-short P&L
+│   ├── strategy_mb_returns.csv     # Monthly MAXβ long-short P&L
+│   ├── decile_returns.csv          # Avg return per decile (both signals)
+│   │
+│   ├── cumulative_pnl.png          # Cumulative P&L — MAX vs MAXβ
+│   ├── decile_spread.png           # Avg return by decile bar chart
+│   └── rolling_sharpe.png          # Rolling 12-month Sharpe ratio
+│
+├── clean/                          # Clean analysis-ready parquets (pipeline output)
+│   ├── daily_data.parquet          # 16.4M rows — daily returns + FF5 factors
+│   ├── monthly_data.parquet        # 786K rows  — monthly returns + market cap
+│   └── ff_factors.parquet          # 3,774 rows — Fama-French 5 factors
+│
+├── venv/                           # Python virtual environment
+├── requirements.txt                # Pinned dependencies
+├── paper.pdf                       # Bali, Ince & Ozsoylev (2025)
+└── README.md                       # This file
+```
+
+---
+
+## Methodology Summary
+
+### Part 1 — Data Pipeline (`pipeline/data_pipeline.py`)
+
+Reads raw CRSP files and Fama-French factors, applies filters, and outputs three clean parquet files to `clean/`. Filters applied:
+
+- US common equities only (`securitytype=EQTY`, `sharetype=NS`)
+- NYSE, AMEX, NASDAQ only
+- Penny stocks (< $1) removed
+- Stocks with > 20% missing daily returns dropped
+- Minimum 252 daily / 12 monthly observations required
+
+> Raw CRSP files are not included. Place them in `data/` and run `python pipeline/data_pipeline.py`.
+
+---
+
+### Part 2 — Strategy (`analysis/strategy.py`)
+
+#### MAX Signal
+For each stock × month: average of the 5 highest daily returns within the month. Directly follows Bali, Cakici & Whitelaw (2011).
+
+#### MAXβ Signal — Double-Sort Procedure (paper Section 3.2)
+1. **Rolling beta**: 252-day rolling OLS of `(daily_return − rf) ~ mkt_rf` at each month-end
+2. **Beta deciles**: Sort all stocks into 10 beta deciles each month
+3. **MAX within beta**: Within each beta decile, sort by MAX into 10 sub-deciles
+4. **Regroup**: Stocks sharing the same within-beta MAX rank → one MAXβ portfolio
+   → Beta is flat across MAXβ deciles by construction
+
+#### Portfolio Construction
+- Decile 1 = lowest signal, Decile 10 = highest
+- **Long D1, Short D10** (value-weighted by month-end market cap)
+- Signal at month `t` → return at month `t+1` (no lookahead bias)
+
+---
+
+## Setup & Running
+
+### 1. Activate the virtual environment
 
 ```bash
-python data_pipeline.py
+source venv/bin/activate
 ```
 
-Requires the raw CRSP and FF parquet files in `data/`. Outputs are written to `data/clean/`.
+### 2. Run the strategy (Part 2)
+
+```bash
+python analysis/strategy.py
+```
+
+Runtime: ~23 seconds. Outputs written to `analysis/`.
+
+### 3. Re-run the data pipeline (Part 1)
+
+Requires raw CRSP parquet files in `data/`:
+
+```bash
+python pipeline/data_pipeline.py
+```
+
+### Installing from scratch
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+---
+
+## Dependencies
+
+Core packages (all pinned in `requirements.txt`):
+
+| Package | Purpose |
+|---|---|
+| `pandas` | Data manipulation |
+| `numpy` | Numerical computation |
+| `pyarrow` | Parquet file I/O |
+| `matplotlib` | Charts |
+| `scipy` | (Available; not used in current implementation) |
+
+---
+
+## Data
+
+| File | Rows | Stocks | Period |
+|---|---|---|---|
+| `daily_data.parquet` | 16,423,122 | 8,817 | Jan 2010 – Dec 2024 |
+| `monthly_data.parquet` | 786,467 | 8,815 | Jan 2010 – Dec 2024 |
+| `ff_factors.parquet` | 3,774 | — | Jan 2010 – Dec 2024 |
+
+**Source**: CRSP (January 2025 vintage) + Kenneth French Data Library (FF5 factors, daily).
+
+---
+
+## Reference
+
+Bali, T. G., Ince, B., & Ozsoylev, H. N. (2025). *MAX on Steroids: A New Measure of Investor Attraction to Lottery Stocks*. Georgetown University / Goethe University Frankfurt / Özyeğin University.

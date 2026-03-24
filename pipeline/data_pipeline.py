@@ -14,8 +14,8 @@ import time
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-DATA_DIR = Path("data")
-OUTPUT_DIR = DATA_DIR / "clean"
+DATA_DIR = Path(__file__).parent.parent / "data"
+OUTPUT_DIR = Path(__file__).parent.parent / "clean"
 
 START_DATE = "2010-01-01"
 END_DATE = "2024-12-31"
