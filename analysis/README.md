@@ -10,8 +10,7 @@ This folder contains the full backtest implementation and outputs for the MAX an
 
 | File | Description |
 |---|---|
-| `strategy.py` | Full backtest pipeline (Steps 1–9) |
-| `instructions.md` | Original assignment specification |
+| `strategy.py` | Full backtest pipeline |
 | `strategy_returns.csv` | Monthly MAX long-short returns |
 | `strategy_mb_returns.csv` | Monthly MAXβ long-short returns |
 | `decile_returns.csv` | Average next-month return per decile (both signals) |
@@ -147,21 +146,6 @@ Both signals are weaker post-2020 — consistent with the broader anomaly-decay 
 | 2024 | −27.3% | −10.4% | MAXβ less affected by market risk |
 
 The 2023 divergence is notable: MAX lost −13.6% while MAXβ gained +12.6%. This is consistent with the paper's thesis — in 2023 the market rally (high beta) distorted the MAX signal, but MAXβ's beta-neutralisation correctly identified the idiosyncratic lottery stocks.
-
----
-
-## Caveats and Differences from Paper
-
-| | Paper | This Replication |
-|---|---|---|
-| Sample period | 1968–2022 | 2010–2024 |
-| Price filter | ≥ $5 | ≥ $1 (from pipeline) |
-| Min obs/month | 15 days | 5 days |
-| Sector exclusions | Utilities + Financials removed | Not excluded |
-| Beta breakpoints | NYSE stocks only | All stocks |
-| Factor alphas | Reported (FF3/5/6, SY, DHS) | Not computed |
-
-These differences likely explain why our MAX L/S (0.82%) is slightly below the paper's (0.95%): our looser price filter includes more micro-cap stocks, which introduce noise. The qualitative conclusions are robust.
 
 ---
 
