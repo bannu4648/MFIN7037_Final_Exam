@@ -1,0 +1,15 @@
+# Data (large parquet files)
+data/
+
+# Planning / internal docs
+project_plan.md
+your_role.md
+
+# Research paper
+*.pdf
+
+# Slides (screenshots go into PPT)
+slides.html
+
+# macOS
+.DS_Store
