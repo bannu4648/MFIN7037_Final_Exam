@@ -10,7 +10,7 @@ Replication and extensions of **Bali, Ince & Ozsoylev (2025)**, *MAX on Steroids
 |------|----------|
 | **`code/`** | `strategy.py` — main backtest · `extensions.py` — sub-period metrics, FF5, drawdown figures · `data_pipeline.py` — optional rebuild of cleaned parquets from raw vendor files in **`data/`** |
 | **`data/`** | Placeholder for **local** CRSP + Fama–French extracts consumed by `data_pipeline.py` (see below). The repository includes this folder but **not** the raw parquet files. |
-| **`analysis/data/`** | **Cleaned** CRSP + Fama–French panel (`daily_data.parquet`, `monthly_data.parquet`, `ff_factors.parquet`) — what `strategy.py` and `extensions.py` read. **Commit and push this folder** so clones can run the backtest without raw CRSP. |
+| **`analysis/data/`** | **Cleaned** CRSP + Fama–French panel (`*.parquet`) — what `strategy.py` and `extensions.py` read. Large files are stored with **Git LFS** (GitHub’s 100 MB per-file limit). |
 | **`analysis/outputs/`** | Base backtest: monthly long–short CSVs, decile table, core PNG charts (cumulative P&L, decile spread, rolling Sharpe) |
 | **`analysis/outputs/extensions/`** | Extension outputs: sub-period stats, FF5 regression table, extension figures |
 | **`requirements.txt`** | Pinned Python dependencies |
@@ -52,6 +52,8 @@ If those files are missing, the script exits with a short message instead of a l
 ---
 
 ## Quick start (environment)
+
+**Git LFS:** Install [Git LFS](https://git-lfs.github.com/) and run **`git lfs install`** once on your machine. Then clone as usual; LFS pulls the real parquets under **`analysis/data/`**. If files look tiny or broken after clone, run **`git lfs pull`**.
 
 From the project root:
 
