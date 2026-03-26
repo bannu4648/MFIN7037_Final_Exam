@@ -1,160 +1,141 @@
-# MFIN7037 Final Exam — MAX / MAXβ Anomaly Study
+# MFIN7037 Final Exam — MAX / MAXβ Lottery-Stock Anomaly
 
-A full quantitative research pipeline replicating and extending the MAX anomaly from **Bali, Ince & Ozsoylev (2025)** — *"MAX on Steroids: A New Measure of Investor Attraction to Lottery Stocks"*.
-
-The project demonstrates that stocks with extreme positive daily returns (high MAX) subsequently underperform, and that a **beta-neutralised version (MAXβ)** — constructed via the paper's double-sort procedure — delivers a cleaner, higher Sharpe-ratio signal by isolating idiosyncratic lottery-seeking behaviour from systematic market risk.
-
-**Sample**: 8,817 US equities (NYSE/AMEX/NASDAQ), 2010–2024 (177 months).
+Replication and extensions of **Bali, Ince & Ozsoylev (2025)**, *MAX on Steroids: A New Measure of Investor Attraction to Lottery Stocks*. The project asks whether stocks with extreme positive daily returns (high **MAX**) underperform next month, and whether a **beta-neutral double sort (MAXβ)** delivers a cleaner, higher-Sharpe long–short signal.
 
 ---
 
-## Key Results
+## Repository layout
 
-| Metric | MAX | MAXβ (Double Sort) | Paper (MAXβ) |
-|---|---|---|---|
-| Mean Monthly L/S Return | 0.82% | **0.86%** | 0.81% |
-| Annualised Return | 10.35% | **10.88%** | ~9.7% |
-| Annualised Volatility | 28.1% | **21.0%** | lower than MAX |
-| **Sharpe Ratio (ann.)** | 0.37 | **0.52** | higher than MAX |
-| Win Rate | 58.8% | 58.2% | — |
-| Beta spread D10−D1 | **+0.59** | **+0.02 ≈ 0** | ≈ 0.000 |
-
-The beta-spread result is the paper's central validation: the double sort successfully removes systematic risk from the lottery signal, confirming that plain MAX is partly a proxy for market beta rather than pure idiosyncratic lottery demand.
-
-> See [`analysis/README.md`](analysis/README.md) for a full breakdown of results, year-by-year returns, decile spreads, and a discussion of what the data proves.
+| Path | Contents |
+|------|----------|
+| **`code/`** | `strategy.py` — main backtest · `extensions.py` — sub-period metrics, FF5, drawdown figures · `data_pipeline.py` — optional rebuild of cleaned parquets from raw vendor files in **`data/`** |
+| **`data/`** | Placeholder for **local** CRSP + Fama–French extracts consumed by `data_pipeline.py` (see below). The repository includes this folder but **not** the raw parquet files. |
+| **`analysis/data/`** | **Cleaned** CRSP + Fama–French panel (`daily_data.parquet`, `monthly_data.parquet`, `ff_factors.parquet`) — what `strategy.py` and `extensions.py` read. **Commit and push this folder** so clones can run the backtest without raw CRSP. |
+| **`analysis/outputs/`** | Base backtest: monthly long–short CSVs, decile table, core PNG charts (cumulative P&L, decile spread, rolling Sharpe) |
+| **`analysis/outputs/extensions/`** | Extension outputs: sub-period stats, FF5 regression table, extension figures |
+| **`requirements.txt`** | Pinned Python dependencies |
 
 ---
 
-## Project Structure
+## Data: `data/` vs `analysis/data/`
 
-```
-MFIN7037_Final_Exam/
-│
-├── pipeline/                       # Part 1 — Data engineering
-│   ├── data_pipeline.py            # CRSP raw data → clean parquets
-│   └── README.md                   # Data dictionary & column descriptions
-│
-├── analysis/                       # Part 2 — Signal construction & backtest
-│   ├── strategy.py                 # Full pipeline (Steps 1–9)
-│   ├── instructions.md             # Assignment specification
-│   ├── README.md                   # Results, methodology, paper comparison
-│   │
-│   ├── strategy_returns.csv        # Monthly MAX long-short P&L
-│   ├── strategy_mb_returns.csv     # Monthly MAXβ long-short P&L
-│   ├── decile_returns.csv          # Avg return per decile (both signals)
-│   │
-│   ├── cumulative_pnl.png          # Cumulative P&L — MAX vs MAXβ
-│   ├── decile_spread.png           # Avg return by decile bar chart
-│   └── rolling_sharpe.png          # Rolling 12-month Sharpe ratio
-│
-├── clean/                          # Clean analysis-ready parquets (pipeline output)
-│   ├── daily_data.parquet          # 16.4M rows — daily returns + FF5 factors
-│   ├── monthly_data.parquet        # 786K rows  — monthly returns + market cap
-│   └── ff_factors.parquet          # 3,774 rows — Fama-French 5 factors
-│
-├── venv/                           # Python virtual environment
-├── requirements.txt                # Pinned dependencies
-├── paper.pdf                       # Bali, Ince & Ozsoylev (2025)
-└── README.md                       # This file
-```
+**`code/data_pipeline.py`** reads **CRSP-style daily and monthly stock files** and a **Fama–French five-factor** extract from the root **`data/`** directory, filters and cleans them, and writes the processed parquets to **`analysis/data/`**.
 
----
+Those **raw vendor files are not included in this repository** — they are too large (and often license-restricted). What **is** included is the **cleaned** panel under **`analysis/data/`**, which is enough to run the backtest and extensions without running the pipeline.
 
-## Methodology Summary
+To rebuild `analysis/data/` yourself, copy these files into **`data/`** locally:
 
-### Part 1 — Data Pipeline (`pipeline/data_pipeline.py`)
+- `crsp_202501.dsf_v2.parquet` (daily)
+- `crsp_202501.msf_v2.parquet` (monthly)
+- `ff.five_factor.parquet`
 
-Reads raw CRSP files and Fama-French factors, applies filters, and outputs three clean parquet files to `clean/`. Filters applied:
-
-- US common equities only (`securitytype=EQTY`, `sharetype=NS`)
-- NYSE, AMEX, NASDAQ only
-- Penny stocks (< $1) removed
-- Stocks with > 20% missing daily returns dropped
-- Minimum 252 daily / 12 monthly observations required
-
-> Raw CRSP files are not included. Place them in `data/` and run `python pipeline/data_pipeline.py`.
-
----
-
-### Part 2 — Strategy (`analysis/strategy.py`)
-
-#### MAX Signal
-For each stock × month: average of the 5 highest daily returns within the month. Directly follows Bali, Cakici & Whitelaw (2011).
-
-#### MAXβ Signal — Double-Sort Procedure (paper Section 3.2)
-1. **Rolling beta**: 252-day rolling OLS of `(daily_return − rf) ~ mkt_rf` at each month-end
-2. **Beta deciles**: Sort all stocks into 10 beta deciles each month
-3. **MAX within beta**: Within each beta decile, sort by MAX into 10 sub-deciles
-4. **Regroup**: Stocks sharing the same within-beta MAX rank → one MAXβ portfolio
-   → Beta is flat across MAXβ deciles by construction
-
-#### Portfolio Construction
-- Decile 1 = lowest signal, Decile 10 = highest
-- **Long D1, Short D10** (value-weighted by month-end market cap)
-- Signal at month `t` → return at month `t+1` (no lookahead bias)
-
----
-
-## Setup & Running
-
-### 1. Activate the virtual environment
+Then:
 
 ```bash
-source venv/bin/activate
+python code/data_pipeline.py
 ```
 
-### 2. Run the strategy (Part 2)
+If those files are missing, the script exits with a short message instead of a long traceback.
+
+---
+
+## What `analysis/` is for
+
+| Subfolder | Role |
+|-----------|------|
+| **`analysis/data/`** | **Inputs** to `strategy.py` / `extensions.py` (cleaned parquets). |
+| **`analysis/outputs/`** | **Primary results** from `strategy.py` (CSVs + baseline plots). |
+| **`analysis/outputs/extensions/`** | **Secondary analysis** from `extensions.py` (requires step 1 outputs first). |
+
+**Flow:** cleaned parquets → `strategy.py` → `analysis/outputs/` → `extensions.py` → `analysis/outputs/extensions/`.
+
+---
+
+## Quick start (environment)
+
+From the project root:
 
 ```bash
-python analysis/strategy.py
+cd MFIN7037_Final_Exam
+python -m venv .venv
 ```
 
-Runtime: ~23 seconds. Outputs written to `analysis/`.
+**Windows (PowerShell):** `.venv\Scripts\Activate.ps1` then `pip install -r requirements.txt`  
+**macOS / Linux:** `source .venv/bin/activate` then `pip install -r requirements.txt`
 
-### 3. Re-run the data pipeline (Part 1)
+Use the venv’s `python`. In PowerShell, chain commands with **`;`**, not `&&`.
 
-Requires raw CRSP parquet files in `data/`:
+---
+
+## Running the code
+
+Run **from the repository root**, in order.
+
+**`strategy.py` is slow on purpose.** It scans millions of daily rows, builds MAX, rolling betas, and the full panel—expect **roughly a few minutes to 15+ minutes** depending on CPU and RAM. The process is **not stuck** if the console is quiet for a while; wait until you see **`Done.`** and the validation **OK** lines. Automated graders, CI, or AI agents should use a **generous timeout** (e.g. 20–30+ minutes) for this step so it is not killed mid-run.
+
+### 1) Backtest — requires `analysis/data/*.parquet`
 
 ```bash
-python pipeline/data_pipeline.py
+python code/strategy.py
 ```
 
-### Installing from scratch
+**Outputs:** `strategy_returns.csv`, `strategy_mb_returns.csv`, `decile_returns.csv`, `cumulative_pnl.png`, `decile_spread.png`, `rolling_sharpe.png` in **`analysis/outputs/`**.
+
+If log lines appear late or not at all, set **`PYTHONUNBUFFERED=1`** (PowerShell: `$env:PYTHONUNBUFFERED="1"`) so output prints immediately. **`extensions.py`** is much faster (seconds to a small number of minutes).
+
+### 2) Extensions — requires step 1 + `analysis/data/ff_factors.parquet`
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+python code/extensions.py
 ```
+
+**Outputs** in **`analysis/outputs/extensions/`**: `subperiod_metrics.csv`, `ff5_regression.csv`, `cumulative_drawdown.png`, `sharpe_by_subsample.png`.
+
+### Checklist
+
+- `analysis/outputs/strategy_returns.csv` and `strategy_mb_returns.csv` exist after step 1.
+- `analysis/outputs/extensions/subperiod_metrics.csv` and `ff5_regression.csv` exist after step 2.
+- `strategy.py` finishes with **`Done.`** and validation **OK** lines; no traceback.
+
+---
+
+## Methodology (short)
+
+- **MAX** — For each stock × month: average of the five highest daily returns.
+- **MAXβ** — Each month: sort into beta deciles (252-day rolling market beta), then within each beta decile sort by MAX into deciles; regroup equal MAX ranks across betas so the long–short leg is approximately beta-neutral.
+- **Strategy** — Long decile 1 (low MAX or low MAXβ rank), short decile 10; **value-weighted** by month-end market cap; signal at month *t*, return in month *t+1*.
+
+---
+
+## Key results (indicative — rerun for exact numbers)
+
+| Metric | MAX | MAXβ (double sort) |
+|--------|-----|---------------------|
+| Mean monthly L/S | ~0.82% | ~0.86% |
+| Annualised Sharpe (full sample) | ~0.35 | ~0.49 |
+| Beta spread D10−D1 | Large (MAX loads on beta) | ~0 (by construction) |
+
+**Sharpe** uses **(mean monthly return ÷ monthly volatility) × √12** with sample σ (ddof = 1), matching **`strategy.py`**, **`extensions.py`**, and **`analysis/outputs/extensions/subperiod_metrics.csv`**.
+
+Extension tables and figures: **`analysis/outputs/extensions/`**.
 
 ---
 
 ## Dependencies
 
-Core packages (all pinned in `requirements.txt`):
-
-| Package | Purpose |
-|---|---|
-| `pandas` | Data manipulation |
-| `numpy` | Numerical computation |
-| `pyarrow` | Parquet file I/O |
-| `matplotlib` | Charts |
-| `scipy` | (Available; not used in current implementation) |
+`pandas`, `numpy`, `pyarrow`, `matplotlib`, `scipy` (see `requirements.txt`).
 
 ---
 
-## Data
+## Achievements (what this repo demonstrates)
 
-| File | Rows | Stocks | Period |
-|---|---|---|---|
-| `daily_data.parquet` | 16,423,122 | 8,817 | Jan 2010 – Dec 2024 |
-| `monthly_data.parquet` | 786,467 | 8,815 | Jan 2010 – Dec 2024 |
-| `ff_factors.parquet` | 3,774 | — | Jan 2010 – Dec 2024 |
-
-**Source**: CRSP (January 2025 vintage) + Kenneth French Data Library (FF5 factors, daily).
+1. **End-to-end quant research pipeline** — CRSP-style daily/monthly panel, Fama–French factors, signal construction, portfolio sorts, no-lookahead backtest.
+2. **Paper-aligned MAXβ** — Double sort with explicit **beta-flat** check across MAXβ deciles.
+3. **Extensions** — Drawdowns, sub-sample Sharpe decay, FF5 regression under **`analysis/outputs/extensions/`**.
+4. **Clear separation** — Code in **`code/`**; cleaned data and results under **`analysis/`**.
 
 ---
 
 ## Reference
 
-Bali, T. G., Ince, B., & Ozsoylev, H. N. (2025). *MAX on Steroids: A New Measure of Investor Attraction to Lottery Stocks*. Georgetown University / Goethe University Frankfurt / Özyeğin University.
+Bali, T. G., Ince, B., & Ozsoylev, H. N. (2025). *MAX on Steroids: A New Measure of Investor Attraction to Lottery Stocks*.

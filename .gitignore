@@ -1,5 +1,8 @@
-# Data (large parquet files)
-data/
+# Presentation / local deliverables (not pushed)
+extras/
+
+# Large CRSP / FF vendor extracts under data/ — keep directory, not the parquets
+data/*.parquet
 
 # Planning / internal docs
 project_plan.md
@@ -13,3 +16,7 @@ slides.html
 
 # macOS
 .DS_Store
+
+# Local Python environment
+.venv/
+venv/

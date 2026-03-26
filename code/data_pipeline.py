@@ -3,19 +3,46 @@ data_pipeline.py — Data pipeline for MAX/MAXβ anomaly study.
 
 Reads CRSP daily/monthly stock files and Fama-French 5 factors,
 filters to US common equities on major exchanges (2010–2024),
-cleans the data, and outputs analysis-ready parquet files.
+cleans the data, and writes analysis-ready parquet files to analysis/data/.
+
+Run from repo root:
+  python code/data_pipeline.py
+Expects raw vendor parquets under repo-root data/ (see README); those files are not shipped in the repository.
 """
 
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
-import numpy as np
-from pathlib import Path
-import time
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-DATA_DIR = Path(__file__).parent.parent / "data"
-OUTPUT_DIR = Path(__file__).parent.parent / "clean"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RAW_DATA_DIR = REPO_ROOT / "data"
+OUTPUT_DIR = REPO_ROOT / "analysis" / "data"
+
+REQUIRED_RAW = (
+    RAW_DATA_DIR / "crsp_202501.dsf_v2.parquet",
+    RAW_DATA_DIR / "crsp_202501.msf_v2.parquet",
+    RAW_DATA_DIR / "ff.five_factor.parquet",
+)
+
+
+def _ensure_raw_inputs() -> None:
+    missing = [p for p in REQUIRED_RAW if not p.is_file()]
+    if not missing:
+        return
+    print("Missing raw vendor files under data/:")
+    for p in missing:
+        print(f"  - {p.name}")
+    print(
+        "\nThis repository ships cleaned data in analysis/data/ only.\n"
+        "Copy the three parquets into data/ (see README), then re-run."
+    )
+    sys.exit(1)
 
 START_DATE = "2010-01-01"
 END_DATE = "2024-12-31"
@@ -54,7 +81,7 @@ def read_daily_data() -> pd.DataFrame:
     ]
 
     df = pq.read_table(
-        DATA_DIR / "crsp_202501.dsf_v2.parquet",
+        RAW_DATA_DIR / "crsp_202501.dsf_v2.parquet",
         columns=DAILY_COLS,
         filters=filters,
     ).to_pandas()
@@ -78,7 +105,7 @@ def read_monthly_data() -> pd.DataFrame:
     ]
 
     df = pq.read_table(
-        DATA_DIR / "crsp_202501.msf_v2.parquet",
+        RAW_DATA_DIR / "crsp_202501.msf_v2.parquet",
         columns=MONTHLY_COLS,
         filters=filters,
     ).to_pandas()
@@ -91,7 +118,7 @@ def read_monthly_data() -> pd.DataFrame:
 def read_ff_factors() -> pd.DataFrame:
     """Read Fama-French 5 factors and filter to the study period."""
     print("Reading Fama-French 5 factors...")
-    ff = pd.read_parquet(DATA_DIR / "ff.five_factor.parquet")
+    ff = pd.read_parquet(RAW_DATA_DIR / "ff.five_factor.parquet")
     ff["date"] = pd.to_datetime(ff["dt"])
     ff = ff[(ff["date"] >= START_DATE) & (ff["date"] <= END_DATE)]
     ff = ff.drop(columns=["dt"]).sort_values("date").reset_index(drop=True)
@@ -278,7 +305,7 @@ def validate(daily: pd.DataFrame, monthly: pd.DataFrame) -> dict:
 # ── Step 7: Save ───────────────────────────────────────────────────────────────
 
 def save_outputs(daily: pd.DataFrame, monthly: pd.DataFrame, ff: pd.DataFrame):
-    """Write clean parquet files to the output directory."""
+    """Write clean parquet files to analysis/data/."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     print("\nSaving output files...")
@@ -298,6 +325,7 @@ def save_outputs(daily: pd.DataFrame, monthly: pd.DataFrame, ff: pd.DataFrame):
 
 def main():
     t_start = time.time()
+    _ensure_raw_inputs()
 
     # Read raw data
     daily_raw = read_daily_data()

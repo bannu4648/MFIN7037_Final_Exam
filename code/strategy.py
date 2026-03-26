@@ -1,25 +1,12 @@
 """
 strategy.py — MAX and MAXβ Long-Short Strategy
 
-Key methodology:
-  MAX    : average of the 5 highest daily returns per stock-month
-  MAXβ   : double-sort procedure
-             1. Each month, sort stocks into beta deciles using a 252-day
-                rolling OLS beta (daily excess return ~ market excess return)
-             2. Within each beta decile, sort stocks into MAX deciles
-             3. Regroup all stocks sharing the same within-beta MAX rank
-                → forms the MAXβ portfolio (beta-neutral by construction)
-  Strategy: Long D1 (low), Short D10 (high)
-  Weights : value-weighted by month-end market cap
-  Timing  : signal at month t → return realised in month t+1
+Outputs go to analysis/outputs/:
+  strategy_returns.csv, strategy_mb_returns.csv, decile_returns.csv
+  cumulative_pnl.png, decile_spread.png, rolling_sharpe.png
 
-Outputs (all written to analysis/):
-  strategy_returns.csv    monthly MAX long-short P&L
-  strategy_mb_returns.csv monthly MAXβ long-short P&L
-  decile_returns.csv      avg return by decile (both signals)
-  cumulative_pnl.png
-  decile_spread.png
-  rolling_sharpe.png
+Run from repo root:
+  python code/strategy.py
 """
 
 import warnings
@@ -34,34 +21,38 @@ import matplotlib.dates as mdates
 from pathlib import Path
 import time
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
-CLEAN_DIR = Path(__file__).parent.parent / "clean"
-OUT_DIR   = Path(__file__).parent
 
-# ── Step 1: Load data ───────────────────────────────────────────────────────────
+def resolve_data_dir() -> Path:
+    """Prefer analysis/data/; fall back to legacy clean/."""
+    p = REPO_ROOT / "analysis" / "data"
+    if (p / "daily_data.parquet").exists() and (p / "monthly_data.parquet").exists():
+        return p
+    for legacy in (REPO_ROOT / "clean", REPO_ROOT / "clean" / "clean"):
+        if (legacy / "daily_data.parquet").exists():
+            return legacy
+    return p
+
+
+DATA_DIR = resolve_data_dir()
+OUT_DIR = REPO_ROOT / "analysis" / "outputs"
+
 
 def load_data():
     print("=" * 60)
-    print("Loading data from", CLEAN_DIR)
+    print("Loading data from", DATA_DIR)
     print("=" * 60)
 
-    daily   = pd.read_parquet(CLEAN_DIR / "daily_data.parquet")
-    monthly = pd.read_parquet(CLEAN_DIR / "monthly_data.parquet")
+    daily   = pd.read_parquet(DATA_DIR / "daily_data.parquet")
+    monthly = pd.read_parquet(DATA_DIR / "monthly_data.parquet")
 
     print(f"  daily_data   : {len(daily):>12,} rows  |  {daily['permno'].nunique():,} stocks")
     print(f"  monthly_data : {len(monthly):>12,} rows  |  {monthly['permno'].nunique():,} stocks")
     return daily, monthly
 
 
-# ── Step 2: Compute MAX ───────────────────────────────────────────────────────────
-
 def compute_max(daily: pd.DataFrame) -> pd.DataFrame:
-    """
-    MAX = average of the 5 highest daily returns within each stock-month.
-    Groups with fewer than 5 valid returns are dropped.
-    Uses sort + groupby.head() to avoid slow Python-level apply.
-    """
     print("\n[Step 1] Computing MAX...")
     t0 = time.time()
 
@@ -85,21 +76,7 @@ def compute_max(daily: pd.DataFrame) -> pd.DataFrame:
     return max_df
 
 
-# ── Step 3: Compute 252-day rolling market beta ──────────────────────────────────
-
 def compute_rolling_beta(daily: pd.DataFrame) -> pd.DataFrame:
-    """
-    Estimate market beta at each month-end using a 252-day rolling window:
-
-        (daily_return - rf)_t = α + β * mkt_rf_t + ε_t
-
-    β = Cov(excess_ret, mkt_rf) / Var(mkt_rf)  [over past 252 trading days]
-
-    Implemented fully vectorised via pandas rolling transforms — no per-stock
-    Python loops.  min_periods=60 (~3 months) required for a valid estimate.
-
-    Returns DataFrame [permno, month, beta] with the month-end rolling beta.
-    """
     print("\n[Step 2] Computing 252-day rolling market beta (vectorised)...")
     t0 = time.time()
 
@@ -107,12 +84,11 @@ def compute_rolling_beta(daily: pd.DataFrame) -> pd.DataFrame:
     d = d.dropna(subset=["daily_return", "rf", "mkt_rf"])
     d = d.sort_values(["permno", "date"])
 
-    d["y"]  = d["daily_return"] - d["rf"]   # stock excess return
-    d["x"]  = d["mkt_rf"]                   # market excess return
+    d["y"]  = d["daily_return"] - d["rf"]
+    d["x"]  = d["mkt_rf"]
     d["xy"] = d["y"] * d["x"]
     d["x2"] = d["x"] ** 2
 
-    # Rolling means per permno — all four moments in one transform pass
     roll = (
         d.groupby("permno", sort=False)[["y", "x", "xy", "x2"]]
         .transform(lambda s: s.rolling(252, min_periods=60).mean())
@@ -123,7 +99,6 @@ def compute_rolling_beta(daily: pd.DataFrame) -> pd.DataFrame:
 
     d["beta"] = np.where(var_x > 1e-12, cov_xy / var_x, np.nan)
 
-    # Keep only month-end beta (last valid observation per permno-month)
     month_end_beta = (
         d.dropna(subset=["beta"])
         .sort_values(["permno", "date"])
@@ -137,27 +112,18 @@ def compute_rolling_beta(daily: pd.DataFrame) -> pd.DataFrame:
     return month_end_beta
 
 
-# ── Step 4: Build signal panel — join to next-month returns ──────────────────────
-
 def build_panel(
     max_df: pd.DataFrame,
     beta_df: pd.DataFrame,
     monthly: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Merge MAX + month-end beta + market cap (all at month t) to next-month
-    return (month t+1).  No lookahead bias.
-    """
-    print("\nBuilding panel (signal t → return t+1)...")
+    print("\nBuilding panel (signal t -> return t+1)...")
 
-    # Merge MAX and beta
     signals = max_df.merge(beta_df, on=["permno", "month"], how="inner")
 
-    # Attach month-t market cap (used for value-weighting)
     mktcap = monthly[["permno", "month", "market_cap"]].dropna(subset=["market_cap"])
     signals = signals.merge(mktcap, on=["permno", "month"], how="left")
 
-    # Build prev_month column on returns side for the t→t+1 join
     ret = monthly[["permno", "month", "monthly_return"]].dropna(subset=["monthly_return"]).copy()
     ret["prev_month"] = (pd.PeriodIndex(ret["month"], freq="M") - 1).astype(str)
 
@@ -171,32 +137,12 @@ def build_panel(
     panel = panel.dropna(subset=["MAX", "beta", "ret_next"])
 
     print(f"  Panel: {len(panel):,} rows  |  {panel['month'].nunique()} months  "
-          f"({panel['month'].min()} → {panel['month'].max()})")
+          f"({panel['month'].min()} -> {panel['month'].max()})")
     return panel
 
 
-# ── Step 5: Decile assignment — MAX (simple) and MAXβ (double sort) ──────────────
-
 def assign_deciles(panel: pd.DataFrame) -> pd.DataFrame:
-    """
-    MAX deciles
-    -----------
-    Each month, rank all stocks into deciles 1–10 by MAX.
-
-    MAXβ deciles  (double-sort procedure)
-    --------------------------------------
-    Step 1: Each month, sort stocks into 10 beta deciles using the
-            252-day rolling market beta.
-    Step 2: Within each (month, beta_decile) group, rank stocks by
-            MAX into 10 sub-deciles.
-    Step 3: The MAXβ portfolio of rank n is formed by grouping all
-            stocks that received MAX rank n across the 10 beta deciles.
-
-    This procedure controls for systematic risk so that each MAXβ
-    decile spans the full beta distribution (beta spread ≈ 0 across
-    MAXβ deciles — verified in the validation step).
-    """
-    print("\n[Step 3] Assigning deciles (MAX simple sort; MAXβ double sort)...")
+    print("\n[Step 3] Assigning deciles (MAX simple sort; MAX beta double sort)...")
 
     def safe_decile(s):
         try:
@@ -208,15 +154,12 @@ def assign_deciles(panel: pd.DataFrame) -> pd.DataFrame:
 
     panel = panel.copy()
 
-    # ── MAX: simple monthly sort ──────────────────────────────────────────────
     panel["dec_MAX"] = panel.groupby("month")["MAX"].transform(safe_decile)
 
-    # ── MAXβ Step 1: beta deciles each month ──────────────────────────────────
     panel["beta_decile"] = panel.groupby("month")["beta"].transform(safe_decile)
     panel = panel.dropna(subset=["dec_MAX", "beta_decile"])
     panel["beta_decile"] = panel["beta_decile"].astype(int)
 
-    # ── MAXβ Step 2: within each (month, beta_decile), rank by MAX ────────────
     panel["dec_MAX_beta"] = (
         panel.groupby(["month", "beta_decile"])["MAX"]
         .transform(safe_decile)
@@ -231,13 +174,7 @@ def assign_deciles(panel: pd.DataFrame) -> pd.DataFrame:
     return panel
 
 
-# ── Step 6: Portfolio returns (value-weighted) ──────────────────────────────────
-
 def compute_portfolio_returns(panel: pd.DataFrame):
-    """
-    Compute monthly value-weighted returns for each decile (MAX and MAXβ).
-    Long-short = D1 − D10 (long low-MAX, short high-MAX).
-    """
     print("\n[Step 4] Computing portfolio returns (value-weighted)...")
 
     def _vw(df, dec_col):
@@ -259,7 +196,6 @@ def compute_portfolio_returns(panel: pd.DataFrame):
         return agg
 
     def _ls(dec_ret, dec_col):
-        """Build long-short DataFrame from decile returns."""
         long_r  = dec_ret[dec_ret[dec_col] ==  1].set_index("month")["vw_ret"]
         short_r = dec_ret[dec_ret[dec_col] == 10].set_index("month")["vw_ret"]
         idx     = long_r.index.intersection(short_r.index)
@@ -271,15 +207,12 @@ def compute_portfolio_returns(panel: pd.DataFrame):
             "long_short_return": ls.values,
         }).sort_values("month").reset_index(drop=True)
 
-    # MAX-sorted
     dec_max     = _vw(panel, "dec_MAX")
     strategy_df = _ls(dec_max, "dec_MAX")
 
-    # MAXβ-sorted (double-sort)
     dec_mb         = _vw(panel, "dec_MAX_beta")
     strategy_mb_df = _ls(dec_mb, "dec_MAX_beta")
 
-    # Decile spread table
     avg_max = (
         dec_max.groupby("dec_MAX")["vw_ret"].mean()
         .reset_index().rename(columns={"dec_MAX": "decile", "vw_ret": "avg_return_MAX"})
@@ -292,22 +225,21 @@ def compute_portfolio_returns(panel: pd.DataFrame):
 
     print(f"  MAX  L/S: {strategy_df['long_short_return'].mean():+.4%}/month  "
           f"({len(strategy_df)} months)")
-    print(f"  MAXβ L/S: {strategy_mb_df['long_short_return'].mean():+.4%}/month  "
+    print(f"  MAX_BETA L/S: {strategy_mb_df['long_short_return'].mean():+.4%}/month  "
           f"({len(strategy_mb_df)} months)")
 
     return strategy_df, strategy_mb_df, decile_returns
 
 
-# ── Step 7: Performance metrics ─────────────────────────────────────────────────
-
 def compute_metrics(strategy_df: pd.DataFrame, label: str = "MAX") -> dict:
     r = strategy_df["long_short_return"]
 
     mean_r   = r.mean()
-    vol      = r.std()
+    vol      = r.std(ddof=1) if len(r) > 1 else np.nan
     ann_ret  = (1 + mean_r) ** 12 - 1
     ann_vol  = vol * np.sqrt(12)
-    sharpe   = ann_ret / ann_vol if ann_vol > 0 else np.nan
+    # Sharpe: (mean monthly / monthly σ) × √12 — same as extensions.py / subperiod_metrics.csv
+    sharpe = (mean_r / vol) * np.sqrt(12) if np.isfinite(vol) and vol > 0 else np.nan
     win_rate = (r > 0).mean()
     cum      = (1 + r).cumprod()
     max_dd   = ((cum - cum.cummax()) / cum.cummax()).min()
@@ -324,7 +256,7 @@ def compute_metrics(strategy_df: pd.DataFrame, label: str = "MAX") -> dict:
     }
 
     print(f"\n{'='*54}")
-    print(f"  {label} — Long D1 / Short D10 Performance")
+    print(f"  {label} - Long D1 / Short D10 Performance")
     print(f"{'='*54}")
     fmt = {k: (f"{v:.4%}" if isinstance(v, float) and k != "N Months" else str(int(v)))
            for k, v in metrics.items()}
@@ -334,8 +266,6 @@ def compute_metrics(strategy_df: pd.DataFrame, label: str = "MAX") -> dict:
 
     return metrics
 
-
-# ── Step 8: Visualisations ───────────────────────────────────────────────────────
 
 def _to_dates(months):
     return pd.to_datetime([m + "-01" for m in months])
@@ -424,58 +354,48 @@ def plot_rolling_sharpe(
     print(f"  Saved: {path.name}")
 
 
-# ── Step 9: Validation (no lookahead + beta-flat check) ───────────────────────────
-
 def validate(panel: pd.DataFrame):
     print("\n[Validation]")
 
-    # ── Timing: signal_month + 1 = return_month ───────────────────────────────
     sig  = pd.PeriodIndex(panel["month"],      freq="M")
     ret  = pd.PeriodIndex(panel["next_month"], freq="M")
     lags = (ret - sig).map(lambda x: x.n)
     assert (lags == 1).all(), f"Lookahead bias! Lag distribution:\n{lags.value_counts()}"
-    print("  No lookahead bias: signal_month + 1 = return_month  ✓")
+    print("  No lookahead bias: signal_month + 1 = return_month  OK")
 
-    # ── No duplicates ─────────────────────────────────────────────────────────
     dups = panel.duplicated(subset=["permno", "month"]).sum()
     assert dups == 0, f"Duplicate (permno, month) rows: {dups}"
-    print("  No duplicate (permno, month) pairs  ✓")
+    print("  No duplicate (permno, month) pairs  OK")
 
-    # ── Beta should be flat across MAXβ deciles (double-sort key check) ─────────
     beta_by_dec = panel.groupby("dec_MAX_beta")["beta"].mean()
     spread = beta_by_dec.iloc[-1] - beta_by_dec.iloc[0]
-    print(f"  Beta spread across MAXβ deciles (D10 − D1): {spread:+.4f}")
+    print(f"  Beta spread across MAX_BETA deciles (D10 - D1): {spread:+.4f}")
 
     beta_by_max = panel.groupby("dec_MAX")["beta"].mean()
     max_spread = beta_by_max.iloc[-1] - beta_by_max.iloc[0]
-    print(f"  Beta spread across MAX  deciles (D10 − D1): {max_spread:+.4f}")
+    print(f"  Beta spread across MAX  deciles (D10 - D1): {max_spread:+.4f}")
 
-    print(f"  Signal months: {panel['month'].min()} → {panel['month'].max()}")
-    print(f"  Return months: {panel['next_month'].min()} → {panel['next_month'].max()}")
+    print(f"  Signal months: {panel['month'].min()} -> {panel['month'].max()}")
+    print(f"  Return months: {panel['next_month'].min()} -> {panel['next_month'].max()}")
 
-
-# ── Main ───────────────────────────────────────────────────────────────────────────
 
 def main():
     t_start = time.time()
 
-    # Load
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
     daily, monthly = load_data()
 
-    # Signals
     max_df  = compute_max(daily)
     beta_df = compute_rolling_beta(daily)
 
-    # Panel
     panel = build_panel(max_df, beta_df, monthly)
     panel = assign_deciles(panel)
 
-    # Returns and metrics
     strategy_df, strategy_mb_df, decile_returns = compute_portfolio_returns(panel)
     compute_metrics(strategy_df,    label="MAX")
-    compute_metrics(strategy_mb_df, label="MAXβ (double sort)")
+    compute_metrics(strategy_mb_df, label="MAX_BETA (double sort)")
 
-    # Save CSVs
     print("\n[Step 5] Saving output files...")
     strategy_df   .to_csv(OUT_DIR / "strategy_returns.csv",    index=False)
     strategy_mb_df.to_csv(OUT_DIR / "strategy_mb_returns.csv", index=False)
@@ -484,13 +404,11 @@ def main():
     print(f"  Saved: strategy_mb_returns.csv  ({len(strategy_mb_df)} rows)")
     print(f"  Saved: decile_returns.csv    ({len(decile_returns)} rows)")
 
-    # Charts
     print("\n[Step 6] Generating charts...")
     plot_cumulative_pnl(strategy_df, strategy_mb_df)
     plot_decile_spread(decile_returns)
     plot_rolling_sharpe(strategy_df, strategy_mb_df)
 
-    # Validate
     validate(panel)
 
     print(f"\nTotal runtime: {time.time() - t_start:.1f}s")
